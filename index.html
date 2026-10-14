@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Content Calendar</title>
+  <style>
+    :root {
+      --bg: #f6f6f8;
+      --card: #ffffff;
+      --text: #1d1d24;
+      --muted: #6b6b78;
+      --today: #22a06b;
+      --tomorrow: #e2a400;
+      --week: #3b82f6;
+      --later: #8b8b99;
+      --past: #9aa0a6;
+      --error: #e5484d;
+      --border: #e4e4ea;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px 16px;
+    }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    h1 { margin: 0 0 4px; font-size: 26px; }
+    .sub { color: var(--muted); margin: 0 0 20px; }
+
+    /* Link input */
+    .setup {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .setup input {
+      flex: 1 1 300px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    button {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 8px;
+      background: var(--text);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+
+    /* Summary chips */
+    .summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    .chip {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    .chip b { margin-right: 4px; }
+
+    /* Groups */
+    .group { margin-bottom: 24px; }
+    .group h2 {
+      font-size: 16px;
+      margin: 0 0 10px;
+      padding-left: 10px;
+      border-left: 4px solid var(--color);
+    }
+    .item {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--color);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+    }
+    .item .date { font-weight: 700; margin-bottom: 6px; }
+    .item .field { font-size: 14px; margin: 2px 0; word-break: break-word; }
+    .item .field span { color: var(--muted); }
+    .item.problem { border-color: var(--error); background: #fff5f5; }
+    .warn { color: var(--error); font-size: 13px; font-weight: 600; margin-top: 6px; }
+    .msg { color: var(--muted); padding: 20px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Content Calendar</h1>
+    <p class="sub" id="todayLabel"></p>
+
+    <div class="setup">
+      <input id="csvLink" type="url" placeholder="Paste the published Google Sheet CSV link here">
+      <button id="loadBtn">Load</button>
+      <button id="demoBtn" class="ghost">Try sample data</button>
+    </div>
+
+    <div class="summary" id="summary"></div>
+    <div id="output"><p class="msg">Paste the sheet link above, or try the sample data.</p></div>
+  </div>
+
+  <script>
+    // ---------- 1. Groups and their colors ----------
+    const GROUPS = [
+      { key: "problem",  label: "Needs checking",  color: "var(--error)" },
+      { key: "today",    label: "Today",           color: "var(--today)" },
+      { key: "tomorrow", label: "Tomorrow",        color: "var(--tomorrow)" },
+      { key: "week",     label: "This week",       color: "var(--week)" },
+      { key: "later",    label: "Later",           color: "var(--later)" },
+      { key: "past",     label: "Past",            color: "var(--past)" }
+    ];
+
+    // Sample data so you can test without a real sheet
+    const SAMPLE_CSV = `Date,Platform,Content,Status
+${offsetDate(0)},Instagram,Behind the scenes reel,Ready
+${offsetDate(1)},TikTok,Product demo video,Editing
+${offsetDate(1)},TikTok,Product demo video,Editing
+${offsetDate(3)},Facebook,Client testimonial,Scripted
+${offsetDate(10)},Instagram,Holiday promo,Idea
+${offsetDate(-2)},TikTok,Q&A clip,Posted
+,Instagram,Carousel tips post,Idea`;
+
+    // ---------- 2. Helpers ----------
+    function startOfDay(d) {
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+
+    function offsetDate(days) {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+    }
+
+    // Read CSV text into rows (handles commas inside quotes)
+    function parseCSV(text) {
+      const rows = [];
+      let row = [], cell = "", inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i], next = text[i + 1];
+        if (inQuotes) {
+          if (c === '"' && next === '"') { cell += '"'; i++; }
+          else if (c === '"') inQuotes = false;
+          else cell += c;
+        } else {
+          if (c === '"') inQuotes = true;
+          else if (c === ",") { row.push(cell); cell = ""; }
+          else if (c === "\n" || c === "\r") {
+            if (c === "\r" && next === "\n") i++;
+            row.push(cell); rows.push(row); row = []; cell = "";
+          } else cell += c;
+        }
+      }
+      if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+      return rows.filter(r => r.some(v => v.trim() !== ""));
+    }
+
+    // Turn text like 10/15/2026, 2026-10-15 or Oct 15, 2026 into a date
+    function parseDate(value) {
+      if (!value || !value.trim()) return null;
+      const v = value.trim();
+
+      let m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);           // 2026-10-15
+      if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+
+      m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);           // 10/15/2026
+      if (m) {
+        const year = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+        return new Date(year, +m[1] - 1, +m[2]);
+      }
+
+      const d = new Date(v);                                     // Oct 15, 2026
+      return isNaN(d) ? "invalid" : startOfDay(d);
+    }
+
+    // Find the column that holds the date
+    function findDateColumn(headers) {
+      const i = headers.findIndex(h => /date|schedule|post on|day/i.test(h));
+      return i === -1 ? 0 : i;
+    }
+
+    function formatDate(d) {
+      return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    }
+
+    function escapeHTML(s) {
+      return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    // ---------- 3. Sort and group ----------
+    function buildCalendar(csvText) {
+      const rows = parseCSV(csvText);
+      if (rows.length < 2) throw new Error("The sheet looks empty.");
+
+      const headers = rows[0].map(h => h.trim());
+      const dateCol = findDateColumn(headers);
+      const today = startOfDay(new Date());
+      const DAY = 24 * 60 * 60 * 1000;
+
+      // Count duplicates (same date + same content)
+      const seen = {};
+      rows.slice(1).forEach(r => {
+        const key = r.join("|").toLowerCase();
+        seen[key] = (seen[key] || 0) + 1;
+      });
+
+      const items = rows.slice(1).map(r => {
+        const date = parseDate(r[dateCol]);
+        const problems = [];
+        let group;
+
+        if (date === null) problems.push("No date");
+        else if (date === "invalid") problems.push(`Can't read date "${r[dateCol]}"`);
+        if (seen[r.join("|").toLowerCase()] > 1) problems.push("Duplicate entry");
+
+        if (date instanceof Date) {
+          const diff = Math.round((date - today) / DAY);
+          if (diff < 0) group = "past";
+          else if (diff === 0) group = "today";
+          else if (diff === 1) group = "tomorrow";
+          else if (diff <= 7) group = "week";
+          else group = "later";
+        }
+        if (problems.length) group = "problem";
+
+        return { row: r, date, group, problems };
+      });
+
+      // Sort by date (soonest first)
+      items.sort((a, b) => {
+        const ta = a.date instanceof Date ? a.date.getTime() : Infinity;
+        const tb = b.date instanceof Date ? b.date.getTime() : Infinity;
+        return ta - tb;
+      });
+
+      render(items, headers, dateCol);
+    }
+
+    // ---------- 4. Show on the page ----------
+    function render(items, headers, dateCol) {
+      const out = document.getElementById("output");
+      const summary = document.getElementById("summary");
+      out.innerHTML = "";
+      summary.innerHTML = "";
+
+      GROUPS.forEach(g => {
+        const list = items.filter(i => i.group === g.key);
+        if (!list.length) return;
+
+        summary.innerHTML += `<div class="chip"><b>${list.length}</b>${g.label}</div>`;
+
+        const section = document.createElement("div");
+        section.className = "group";
+        section.style.setProperty("--color", g.color);
+        section.innerHTML = `<h2>${g.label}</h2>`;
+
+        list.forEach(item => {
+          const dateText = item.date instanceof Date ? formatDate(item.date) : "No valid date";
+          const fields = headers
+            .map((h, i) => i === dateCol || !item.row[i] ? "" :
+              `<div class="field"><span>${escapeHTML(h)}:</span> ${escapeHTML(item.row[i])}</div>`)
+            .join("");
+          const warn = item.problems.length
+            ? `<div class="warn">⚠ ${item.problems.join(" · ")}</div>` : "";
+
+          section.innerHTML += `
+            <div class="item ${item.problems.length ? "problem" : ""}">
+              <div class="date">${dateText}</div>
+              ${fields}
+              ${warn}
+            </div>`;
+        });
+
+        out.appendChild(section);
+      });
+    }
+
+    // ---------- 5. Load from link ----------
+    async function loadFromLink(url) {
+      const out = document.getElementById("output");
+      out.innerHTML = `<p class="msg">Loading...</p>`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Couldn't open the link.");
+        buildCalendar(await res.text());
+        try { localStorage.setItem("csvLink", url); } catch (e) {}
+      } catch (err) {
+        out.innerHTML = `<p class="msg">⚠ ${err.message} Make sure the sheet is published as CSV.</p>`;
+      }
+    }
+
+    // ---------- 6. Buttons ----------
+    document.getElementById("todayLabel").textContent = "Today is " + formatDate(new Date());
+
+    document.getElementById("loadBtn").addEventListener("click", () => {
+      const url = document.getElementById("csvLink").value.trim();
+      if (url) loadFromLink(url);
+    });
+
+    document.getElementById("demoBtn").addEventListener("click", () => buildCalendar(SAMPLE_CSV));
+
+    // Remember the last link so she doesn't paste it every time
+    try {
+      const saved = localStorage.getItem("csvLink");
+      if (saved) {
+        document.getElementById("csvLink").value = saved;
+        loadFromLink(saved);
+      }
+    } catch (e) {}
+  </script>
+</body>
+</html>
