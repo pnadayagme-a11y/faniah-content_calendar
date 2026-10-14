@@ -30,7 +30,6 @@
     h1 { margin: 0 0 4px; font-size: 26px; }
     .sub { color: var(--muted); margin: 0 0 20px; }
 
-    /* Link input */
     .setup {
       background: var(--card);
       border: 1px solid var(--border);
@@ -57,9 +56,7 @@
       font-weight: 600;
       cursor: pointer;
     }
-    button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 
-    /* Summary chips */
     .summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
     .chip {
       background: var(--card);
@@ -70,14 +67,16 @@
     }
     .chip b { margin-right: 4px; }
 
-    /* Groups */
     .group { margin-bottom: 24px; }
-    .group h2 {
+    .group h2, .group summary {
       font-size: 16px;
+      font-weight: 700;
       margin: 0 0 10px;
       padding-left: 10px;
       border-left: 4px solid var(--color);
+      cursor: default;
     }
+    .group summary { cursor: pointer; }
     .item {
       background: var(--card);
       border: 1px solid var(--border);
@@ -87,9 +86,11 @@
       margin-bottom: 8px;
     }
     .item .date { font-weight: 700; margin-bottom: 6px; }
-    .item .field { font-size: 14px; margin: 2px 0; word-break: break-word; }
+    .item .field { font-size: 14px; margin: 2px 0; word-break: break-word; white-space: pre-line; }
     .item .field span { color: var(--muted); }
+    .item a { color: var(--week); }
     .item.problem { border-color: var(--error); background: #fff5f5; }
+    .item.empty { color: var(--muted); font-style: italic; }
     .warn { color: var(--error); font-size: 13px; font-weight: 600; margin-top: 6px; }
     .msg { color: var(--muted); padding: 20px; text-align: center; }
   </style>
@@ -100,48 +101,50 @@
     <p class="sub" id="todayLabel"></p>
 
     <div class="setup">
-      <input id="csvLink" type="url" placeholder="Paste the published Google Sheet CSV link here">
+      <input id="sheetLink" type="url" placeholder="Paste the Google Sheet link here">
       <button id="loadBtn">Load</button>
-      <button id="demoBtn" class="ghost">Try sample data</button>
     </div>
 
     <div class="summary" id="summary"></div>
-    <div id="output"><p class="msg">Paste the sheet link above, or try the sample data.</p></div>
+    <div id="output"><p class="msg">Paste the Google Sheet link above and click Load.</p></div>
   </div>
 
   <script>
-    // ---------- 1. Groups and their colors ----------
+    // ---------- 1. Settings ----------
+    const MONTHS = ["January","February","March","April","May","June",
+                    "July","August","September","October","November","December"];
+    const WEEKDAYS = ["SUNDAY","MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY"];
+
+    // Her tabs are named like (OCTOBER). Change this if the naming changes.
+    const tabName = monthIndex => `(${MONTHS[monthIndex].toUpperCase()})`;
+
     const GROUPS = [
-      { key: "problem",  label: "Needs checking",  color: "var(--error)" },
-      { key: "today",    label: "Today",           color: "var(--today)" },
-      { key: "tomorrow", label: "Tomorrow",        color: "var(--tomorrow)" },
-      { key: "week",     label: "This week",       color: "var(--week)" },
-      { key: "later",    label: "Later",           color: "var(--later)" },
-      { key: "past",     label: "Past",            color: "var(--past)" }
+      { key: "problem",  label: "Needs checking", color: "var(--error)" },
+      { key: "today",    label: "Today",          color: "var(--today)" },
+      { key: "tomorrow", label: "Tomorrow",       color: "var(--tomorrow)" },
+      { key: "week",     label: "This week",      color: "var(--week)" },
+      { key: "later",    label: "Later",          color: "var(--later)" },
+      { key: "past",     label: "Past",           color: "var(--past)", collapsed: true }
     ];
 
-    // Sample data so you can test without a real sheet
-    const SAMPLE_CSV = `Date,Platform,Content,Status
-${offsetDate(0)},Instagram,Behind the scenes reel,Ready
-${offsetDate(1)},TikTok,Product demo video,Editing
-${offsetDate(1)},TikTok,Product demo video,Editing
-${offsetDate(3)},Facebook,Client testimonial,Scripted
-${offsetDate(10)},Instagram,Holiday promo,Idea
-${offsetDate(-2)},TikTok,Q&A clip,Posted
-,Instagram,Carousel tips post,Idea`;
-
     // ---------- 2. Helpers ----------
-    function startOfDay(d) {
-      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+    function formatDate(d) {
+      return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
     }
 
-    function offsetDate(days) {
-      const d = new Date();
-      d.setDate(d.getDate() + days);
-      return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+    function escapeHTML(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
 
-    // Read CSV text into rows (handles commas inside quotes)
+    // Make links clickable (for the Media Link column)
+    function linkify(text) {
+      return escapeHTML(text).replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">Open link</a>');
+    }
+
+    // Read CSV text into rows (handles commas and line breaks inside quotes)
     function parseCSV(text) {
       const rows = [];
       let row = [], cell = "", inQuotes = false;
@@ -161,172 +164,194 @@ ${offsetDate(-2)},TikTok,Q&A clip,Posted
         }
       }
       if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
-      return rows.filter(r => r.some(v => v.trim() !== ""));
+      return rows.map(r => r.map(v => v.trim()));
     }
 
-    // Turn text like 10/15/2026, 2026-10-15 or Oct 15, 2026 into a date
-    function parseDate(value) {
-      if (!value || !value.trim()) return null;
-      const v = value.trim();
+    // Get the sheet ID from a normal Google Sheets link
+    function getSheetId(url) {
+      const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      return m && m[1] !== "e" ? m[1] : null;
+    }
 
-      let m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);           // 2026-10-15
-      if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+    // ---------- 3. Read one month tab ----------
+    async function fetchTab(sheetId, month, year) {
+      const name = tabName(month);
+      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&headers=0&sheet=${encodeURIComponent(name)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("not shared");
+      const text = await res.text();
+      if (text.trim().startsWith("<")) throw new Error("not shared");
+      return parseTab(parseCSV(text), month, year);
+    }
 
-      m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);           // 10/15/2026
-      if (m) {
-        const year = m[3].length === 2 ? 2000 + +m[3] : +m[3];
-        return new Date(year, +m[1] - 1, +m[2]);
+    function parseTab(rows, month, year) {
+      // Safety check: if the tab title says a different month, skip it
+      const titleRow = rows.slice(0, 5).flat().join(" ");
+      const titleMatch = titleRow.match(new RegExp(`(${MONTHS.join("|")})\\s+(\\d{4})`, "i"));
+      if (titleMatch && titleMatch[1].toLowerCase() !== MONTHS[month].toLowerCase()) return [];
+      if (titleMatch) year = +titleMatch[2];
+
+      // Find the DAY column (the one full of WEDNESDAY, THURSDAY...)
+      const width = Math.max(...rows.map(r => r.length));
+      let dayCol = -1, best = 0;
+      for (let c = 0; c < width; c++) {
+        const count = rows.filter(r => WEEKDAYS.includes((r[c] || "").toUpperCase())).length;
+        if (count > best) { best = count; dayCol = c; }
+      }
+      if (dayCol < 1) return [];
+      const dateCol = dayCol - 1;
+
+      // Find the header row (the one with DATE / DAY / CONTENT TYPE)
+      let headerRow = rows.findIndex(r => /content type/i.test(r.join(" ")) || (r[dayCol] || "").toUpperCase() === "DAY");
+      if (headerRow === -1) headerRow = 0;
+      const headers = rows[headerRow].map((h, i) => h || `Column ${i + 1}`);
+
+      const items = [];
+      rows.slice(headerRow + 1).forEach(r => {
+        const dayNum = parseInt(r[dateCol], 10);
+        if (!dayNum || dayNum < 1 || dayNum > 31) return;
+
+        const date = new Date(year, month, dayNum);
+        const fields = headers
+          .map((h, i) => ({ label: h, value: r[i] || "" }))
+          .filter((f, i) => i !== dateCol && i !== dayCol && i > dateCol && f.value);
+
+        items.push({
+          date,
+          dayWritten: (r[dayCol] || "").toUpperCase(),
+          fields,
+          hasContent: fields.length > 0,
+          problems: []
+        });
+      });
+      return items;
+    }
+
+    // ---------- 4. Load this month + next month ----------
+    async function loadSheet(url) {
+      const out = document.getElementById("output");
+      const sheetId = getSheetId(url);
+      if (!sheetId) {
+        out.innerHTML = `<p class="msg">⚠ That doesn't look like a Google Sheet link. Copy it from the address bar of the sheet.</p>`;
+        return;
+      }
+      out.innerHTML = `<p class="msg">Loading...</p>`;
+
+      const now = new Date();
+      const thisMonth = { month: now.getMonth(), year: now.getFullYear() };
+      const nextMonth = now.getMonth() === 11
+        ? { month: 0, year: now.getFullYear() + 1 }
+        : { month: now.getMonth() + 1, year: now.getFullYear() };
+
+      const results = await Promise.allSettled([
+        fetchTab(sheetId, thisMonth.month, thisMonth.year),
+        fetchTab(sheetId, nextMonth.month, nextMonth.year)
+      ]);
+
+      if (results.every(r => r.status === "rejected")) {
+        out.innerHTML = `<p class="msg">⚠ Couldn't open the sheet. In Google Sheets, click Share and set General access to "Anyone with the link" (Viewer).</p>`;
+        return;
       }
 
-      const d = new Date(v);                                     // Oct 15, 2026
-      return isNaN(d) ? "invalid" : startOfDay(d);
+      const items = results.filter(r => r.status === "fulfilled").flatMap(r => r.value);
+      if (!items.length) {
+        out.innerHTML = `<p class="msg">⚠ No ${tabName(thisMonth.month)} or ${tabName(nextMonth.month)} tab found. Check the tab names.</p>`;
+        return;
+      }
+
+      try { localStorage.setItem("sheetLink", url); } catch (e) {}
+      checkAndGroup(items);
     }
 
-    // Find the column that holds the date
-    function findDateColumn(headers) {
-      const i = headers.findIndex(h => /date|schedule|post on|day/i.test(h));
-      return i === -1 ? 0 : i;
-    }
-
-    function formatDate(d) {
-      return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-    }
-
-    function escapeHTML(s) {
-      return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-    }
-
-    // ---------- 3. Sort and group ----------
-    function buildCalendar(csvText) {
-      const rows = parseCSV(csvText);
-      if (rows.length < 2) throw new Error("The sheet looks empty.");
-
-      const headers = rows[0].map(h => h.trim());
-      const dateCol = findDateColumn(headers);
+    // ---------- 5. Find mistakes and sort into groups ----------
+    function checkAndGroup(items) {
       const today = startOfDay(new Date());
-      const DAY = 24 * 60 * 60 * 1000;
 
-      // Count duplicates (same date + same content)
-      const seen = {};
-      rows.slice(1).forEach(r => {
-        const key = r.join("|").toLowerCase();
-        seen[key] = (seen[key] || 0) + 1;
+      // Count the same content appearing on more than one date
+      const contentKey = it => it.fields.map(f => f.value.toLowerCase()).join("|");
+      const counts = {};
+      items.filter(it => it.hasContent).forEach(it => {
+        const k = contentKey(it);
+        counts[k] = (counts[k] || 0) + 1;
       });
 
-      const items = rows.slice(1).map(r => {
-        const date = parseDate(r[dateCol]);
-        const problems = [];
-        let group;
-
-        if (date === null) problems.push("No date");
-        else if (date === "invalid") problems.push(`Can't read date "${r[dateCol]}"`);
-        if (seen[r.join("|").toLowerCase()] > 1) problems.push("Duplicate entry");
-
-        if (date instanceof Date) {
-          const diff = Math.round((date - today) / DAY);
-          if (diff < 0) group = "past";
-          else if (diff === 0) group = "today";
-          else if (diff === 1) group = "tomorrow";
-          else if (diff <= 7) group = "week";
-          else group = "later";
+      items.forEach(it => {
+        // Wrong day name next to the date
+        const realDay = WEEKDAYS[it.date.getDay()];
+        if (it.dayWritten && it.dayWritten !== realDay) {
+          it.problems.push(`Day says ${it.dayWritten} but this date is a ${realDay}`);
         }
-        if (problems.length) group = "problem";
+        if (it.hasContent && counts[contentKey(it)] > 1) {
+          it.problems.push("Same content is listed on another date");
+        }
 
-        return { row: r, date, group, problems };
+        const diff = Math.round((it.date - today) / DAY_MS);
+        if (diff < 0) it.group = "past";
+        else if (diff === 0) it.group = "today";
+        else if (diff === 1) it.group = "tomorrow";
+        else if (diff <= 7) it.group = "week";
+        else it.group = "later";
+
+        if (it.problems.length && diff >= 0) it.group = "problem";
       });
 
-      // Sort by date (soonest first)
-      items.sort((a, b) => {
-        const ta = a.date instanceof Date ? a.date.getTime() : Infinity;
-        const tb = b.date instanceof Date ? b.date.getTime() : Infinity;
-        return ta - tb;
-      });
-
-      render(items, headers, dateCol);
+      items.sort((a, b) => a.date - b.date);
+      render(items, today);
     }
 
-    // ---------- 4. Show on the page ----------
-    function render(items, headers, dateCol) {
+    // ---------- 6. Show on the page ----------
+    function render(items, today) {
       const out = document.getElementById("output");
       const summary = document.getElementById("summary");
       out.innerHTML = "";
       summary.innerHTML = "";
 
       GROUPS.forEach(g => {
-        const list = items.filter(i => i.group === g.key);
-        if (!list.length) return;
+        let list = items.filter(i => i.group === g.key);
 
-        summary.innerHTML += `<div class="chip"><b>${list.length}</b>${g.label}</div>`;
+        // Today and Tomorrow always show, even when empty
+        const alwaysShow = g.key === "today" || g.key === "tomorrow";
+        const withContent = list.filter(i => i.hasContent || i.problems.length);
+        if (!withContent.length && !alwaysShow) return;
+        if (!alwaysShow) list = withContent;
 
-        const section = document.createElement("div");
+        summary.innerHTML += `<div class="chip"><b>${withContent.length}</b>${g.label}</div>`;
+
+        const cards = list.length ? list.map(it => {
+          if (!it.hasContent && !it.problems.length) {
+            return `<div class="item empty"><div class="date">${formatDate(it.date)}</div>Nothing scheduled</div>`;
+          }
+          const fields = it.fields.map(f =>
+            `<div class="field"><span>${escapeHTML(f.label)}:</span> ${linkify(f.value)}</div>`).join("");
+          const warn = it.problems.length ? `<div class="warn">⚠ ${it.problems.join(" · ")}</div>` : "";
+          return `<div class="item ${it.problems.length ? "problem" : ""}">
+                    <div class="date">${formatDate(it.date)}</div>${fields}${warn}</div>`;
+        }).join("") : `<div class="item empty">No posting slot on the calendar</div>`;
+
+        const section = document.createElement(g.collapsed ? "details" : "div");
         section.className = "group";
         section.style.setProperty("--color", g.color);
-        section.innerHTML = `<h2>${g.label}</h2>`;
-
-        list.forEach(item => {
-          const dateText = item.date instanceof Date ? formatDate(item.date) : "No valid date";
-          const fields = headers
-            .map((h, i) => i === dateCol || !item.row[i] ? "" :
-              `<div class="field"><span>${escapeHTML(h)}:</span> ${escapeHTML(item.row[i])}</div>`)
-            .join("");
-          const warn = item.problems.length
-            ? `<div class="warn">⚠ ${item.problems.join(" · ")}</div>` : "";
-
-          section.innerHTML += `
-            <div class="item ${item.problems.length ? "problem" : ""}">
-              <div class="date">${dateText}</div>
-              ${fields}
-              ${warn}
-            </div>`;
-        });
-
+        section.innerHTML = g.collapsed
+          ? `<summary>${g.label} (${withContent.length})</summary>${cards}`
+          : `<h2>${g.label}</h2>${cards}`;
         out.appendChild(section);
       });
     }
 
-    // ---------- 5. Load from link ----------
-    // Turn a normal Google Sheet link (/edit) into a CSV link automatically
-    function toCSVLink(url) {
-      if (url.includes("output=csv") || url.includes("tqx=out:csv")) return url;
-      const id = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-      if (id && id[1] !== "e") {
-        const gid = url.match(/[#&?]gid=(\d+)/);
-        return `https://docs.google.com/spreadsheets/d/${id[1]}/gviz/tq?tqx=out:csv&gid=${gid ? gid[1] : 0}`;
-      }
-      return url;
-    }
-
-    async function loadFromLink(url) {
-      const out = document.getElementById("output");
-      out.innerHTML = `<p class="msg">Loading...</p>`;
-      try {
-        const res = await fetch(toCSVLink(url));
-        if (!res.ok) throw new Error("Couldn't open the sheet.");
-        const text = await res.text();
-        if (text.trim().startsWith("<")) throw new Error("The sheet isn't shared publicly yet.");
-        buildCalendar(text);
-        try { localStorage.setItem("csvLink", url); } catch (e) {}
-      } catch (err) {
-        out.innerHTML = `<p class="msg">⚠ Couldn't load the sheet. Set sharing to "Anyone with the link can view", or use the Publish to web CSV link.</p>`;
-      }
-    }
-
-    // ---------- 6. Buttons ----------
+    // ---------- 7. Buttons ----------
     document.getElementById("todayLabel").textContent = "Today is " + formatDate(new Date());
 
     document.getElementById("loadBtn").addEventListener("click", () => {
-      const url = document.getElementById("csvLink").value.trim();
-      if (url) loadFromLink(url);
+      const url = document.getElementById("sheetLink").value.trim();
+      if (url) loadSheet(url);
     });
 
-    document.getElementById("demoBtn").addEventListener("click", () => buildCalendar(SAMPLE_CSV));
-
-    // Remember the last link so she doesn't paste it every time
+    // Remember the last link so she only pastes it once
     try {
-      const saved = localStorage.getItem("csvLink");
+      const saved = localStorage.getItem("sheetLink");
       if (saved) {
-        document.getElementById("csvLink").value = saved;
-        loadFromLink(saved);
+        document.getElementById("sheetLink").value = saved;
+        loadSheet(saved);
       }
     } catch (e) {}
   </script>
