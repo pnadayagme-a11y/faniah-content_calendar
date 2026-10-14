@@ -285,16 +285,29 @@ ${offsetDate(-2)},TikTok,Q&A clip,Posted
     }
 
     // ---------- 5. Load from link ----------
+    // Turn a normal Google Sheet link (/edit) into a CSV link automatically
+    function toCSVLink(url) {
+      if (url.includes("output=csv") || url.includes("tqx=out:csv")) return url;
+      const id = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      if (id && id[1] !== "e") {
+        const gid = url.match(/[#&?]gid=(\d+)/);
+        return `https://docs.google.com/spreadsheets/d/${id[1]}/gviz/tq?tqx=out:csv&gid=${gid ? gid[1] : 0}`;
+      }
+      return url;
+    }
+
     async function loadFromLink(url) {
       const out = document.getElementById("output");
       out.innerHTML = `<p class="msg">Loading...</p>`;
       try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Couldn't open the link.");
-        buildCalendar(await res.text());
+        const res = await fetch(toCSVLink(url));
+        if (!res.ok) throw new Error("Couldn't open the sheet.");
+        const text = await res.text();
+        if (text.trim().startsWith("<")) throw new Error("The sheet isn't shared publicly yet.");
+        buildCalendar(text);
         try { localStorage.setItem("csvLink", url); } catch (e) {}
       } catch (err) {
-        out.innerHTML = `<p class="msg">⚠ ${err.message} Make sure the sheet is published as CSV.</p>`;
+        out.innerHTML = `<p class="msg">⚠ Couldn't load the sheet. Set sharing to "Anyone with the link can view", or use the Publish to web CSV link.</p>`;
       }
     }
 
